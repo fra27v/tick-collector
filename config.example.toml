@@ -1,0 +1,18 @@
+[ibkr]
+host = "127.0.0.1"
+port = 4002
+client_id = 21
+
+[contract]
+symbol = "EUR"
+sec_type = "CASH"
+currency = "USD"
+exchange = "IDEALPRO"
+
+[storage]
+directory = "data"
+queue_capacity = 10000
+flush_interval_seconds = 2
+segment_max_seconds = 900
+segment_max_bytes = 67108864
+minimum_free_bytes = 1073741824

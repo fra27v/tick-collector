@@ -9,3 +9,11 @@ config.toml
 config.local.toml
 data/
 dist/
+logs/
+config.*.toml
+!config.example.toml
+build/
+logs/
+config.*.toml
+!config.example.toml
+build/

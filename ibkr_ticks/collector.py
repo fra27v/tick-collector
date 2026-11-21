@@ -20,7 +20,7 @@ class Adapter(Protocol):
 
 
 class Collector:
-    def __init__(self, config, adapter_factory):
+    def __init__(self, config, adapter_factory, *, clock=time.monotonic, wait=None):
         self.config = config
         self.factory = adapter_factory
         self.queue = Queue(config.storage["queue_capacity"])
@@ -28,12 +28,17 @@ class Collector:
         self.ready = threading.Event()
         self.lost = threading.Event()
         self.resubscribe = threading.Event()
+        self.maintained = threading.Event()
         self.run_id = str(uuid.uuid4())
         self.sequence = self.written = 0
         self.failure = None
         self.accepting = True
         self.recovery_processed = False
         self.callback_lock = threading.Lock()
+        self.clock = clock
+        self.wait = wait or self.stop.wait
+        self.last_request_at = None
+        self.first_tick_received = False
 
     def fail(self, reason):
         self.failure = reason
@@ -45,6 +50,9 @@ class Collector:
             if not self.accepting:
                 return
             self.sequence += 1
+            if not self.first_tick_received:
+                self.first_tick_received = True
+                log.info("First BidAsk tick received run=%s", self.run_id)
             event = dict(contract=dict(self.config.contract), instrument=self.config.instrument,
                 source="IBKR.tickByTickBidAsk", ibkr_timestamp=timestamp,
                 received_utc_ns=time.time_ns(), run_id=self.run_id, sequence=self.sequence,
@@ -63,13 +71,18 @@ class Collector:
             self.recovery_processed = False
         elif code == 1101:
             if not self.recovery_processed:
+                self.maintained.clear()
                 self.resubscribe.set()
                 self.recovery_processed = True
         elif code == 1102:
             self.recovery_processed = True
+            self.resubscribe.clear()
+            self.maintained.set()
             self.ready.set()  # subscriptions maintained: do not submit again
         elif code in (502, 504, 1300):
             self.lost.set()
+        elif code in (2103, 2105, 2110):
+            log.warning("Recoverable connectivity interruption code=%s; awaiting IBKR recovery", code)
         elif code not in (2104, 2106, 2107, 2108, 2158):
             self.fail(f"IBKR error {code}: {message}")
 
@@ -106,10 +119,12 @@ class Collector:
             retry_at = 0
             deadline = 0
             subscribed = False
+            request_sent = False
+            handshake_complete = False
             status_at = 0
             try:
                 while not self.stop.is_set():
-                    now = time.monotonic()
+                    now = self.clock()
                     if now >= status_at:
                         free = shutil.disk_usage(root).free
                         log.info("received=%d written=%d backlog=%d free_bytes=%d run=%s", self.sequence, self.written, self.queue.qsize(), free, self.run_id)
@@ -117,7 +132,9 @@ class Collector:
                         if free < self.config.storage["minimum_free_bytes"]:
                             self.fail(f"Low disk space: {free} bytes free")
                             break
-                    if adapter and (self.lost.is_set() or (not subscribed and now > deadline)):
+                    if self.ready.is_set():
+                        handshake_complete = True
+                    if adapter and (self.lost.is_set() or (not handshake_complete and now > deadline)):
                         log.warning("Connection interrupted; retry in %ss", backoff)
                         adapter.close()
                         adapter = None
@@ -128,8 +145,11 @@ class Collector:
                         self.ready.clear()
                         self.lost.clear()
                         self.resubscribe.clear()
+                        self.maintained.clear()
                         self.recovery_processed = False
                         subscribed = False
+                        request_sent = False
+                        handshake_complete = False
                         adapter = self.factory(self)
                         deadline = now + 15
                         try:
@@ -141,12 +161,20 @@ class Collector:
                         self.resubscribe.clear()
                         subscribed = False
                         self.ready.set()
-                    if adapter and self.ready.is_set() and not subscribed and not self.lost.is_set():
-                        adapter.subscribe()
+                    if self.maintained.is_set() and request_sent:
                         subscribed = True
-                        backoff = 1
-                        log.info("BidAsk subscription active")
-                    self.stop.wait(0.05)
+                    if adapter and self.ready.is_set() and not subscribed and not self.lost.is_set():
+                        handshake_complete = True
+                        interval = self.config.ibkr["tick_request_min_interval_seconds"]
+                        if self.last_request_at is None or now - self.last_request_at >= interval:
+                            self.last_request_at = now
+                            request_sent = True
+                            self.first_tick_received = False
+                            log.info("Sending BidAsk subscription request instrument=%s", self.config.instrument)
+                            adapter.subscribe()
+                            subscribed = True
+                            backoff = 1
+                    self.wait(0.05)
             finally:
                 try:
                     if adapter:

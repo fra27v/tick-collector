@@ -2,6 +2,7 @@
 host = "127.0.0.1"
 port = 4002
 client_id = 21
+tick_request_min_interval_seconds = 15
 
 [contract]
 symbol = "EUR"
@@ -11,12 +12,10 @@ exchange = "IDEALPRO"
 
 [storage]
 # Percorso relativo a questo TOML, non alla directory del terminale.
-# Relativo alla posizione del TOML.
 directory = "data"
 queue_capacity = 10000
 flush_interval_seconds = 2
 segment_max_seconds = 900
 segment_max_bytes = 67108864
 minimum_free_bytes = 1073741824
-status_interval_seconds = 10
 status_interval_seconds = 10

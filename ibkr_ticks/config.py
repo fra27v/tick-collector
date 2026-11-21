@@ -7,7 +7,8 @@ import tomllib
 
 @dataclass
 class Config:
-    ibkr: dict = field(default_factory=lambda: dict(host="127.0.0.1", port=4002, client_id=21))
+    ibkr: dict = field(default_factory=lambda: dict(host="127.0.0.1", port=4002, client_id=21,
+        tick_request_min_interval_seconds=15))
     contract: dict = field(default_factory=lambda: dict(symbol="EUR", sec_type="CASH", currency="USD", exchange="IDEALPRO"))
     storage: dict = field(default_factory=lambda: dict(directory="data", queue_capacity=10000,
         flush_interval_seconds=2, segment_max_seconds=900, segment_max_bytes=67108864,
@@ -36,6 +37,9 @@ def load(path):
             raise ValueError(f"Invalid {name}")
     if not isinstance(c.ibkr["host"], str) or not c.ibkr["host"].strip():
         raise ValueError("Invalid host")
+    interval = c.ibkr["tick_request_min_interval_seconds"]
+    if type(interval) not in (int, float) or not math.isfinite(interval) or interval < 0:
+        raise ValueError("Invalid ibkr.tick_request_min_interval_seconds")
     for v in c.contract.values():
         if not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9.-]+", v):
             raise ValueError("Invalid contract field")

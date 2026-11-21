@@ -85,6 +85,21 @@ eventi già accodati. La raccolta viene dichiarata incompleta.
 Le connessioni interrotte ritentano con backoff 1–60 secondi e timeout handshake
 di 15 secondi. Per ogni ciclo 1100/1101 risottoscrive una volta; 1102 mantiene
 la sottoscrizione, secondo i [codici IBKR](https://www.interactivebrokers.com/docs/tws-api/doc/error/codes).
+`ibkr.tick_request_min_interval_seconds` (default 15) governa esclusivamente
+le richieste di sottoscrizione sullo stesso strumento, non la frequenza dei tick:
+una sottoscrizione attiva continua a ricevere aggiornamenti alla frequenza del feed.
+Ogni numero finito non negativo è accettato e applicato senza imporre un minimo;
+valori inferiori a 15 secondi possono causare un rifiuto IBKR per limiti di pacing.
+La prima richiesta parte dopo l'handshake; le successive restano pendenti fino
+alla scadenza monotona, anche dopo 1101 o ricreazione dell'Adapter. Durante
+l'attesa restano attivi controllo disco, riconnessione e arresto. Il timeout
+dell'handshake è distinto da questa attesa. I log distinguono l'invio della
+richiesta (`Sending BidAsk subscription request`) dal primo callback ricevuto
+(`First BidAsk tick received`): l'invio non conferma la disponibilità del feed.
+I codici 2103 (farm market data), 2105 (farm storica) e 2110 (connessione
+Gateway/server) sono interruzioni recuperabili secondo la stessa documentazione
+ufficiale: vengono registrati e si attende il recupero IBKR senza arrestare
+il collector. Errori di contratto o permessi, ad esempio 200 e 354, restano fatali.
 Le lacune durante le disconnessioni non vengono recuperate da storico.
 Altri errori non informativi arrestano il processo rendendo visibili problemi
 di contratto e permessi. La soglia disco viene controllata ogni
@@ -100,8 +115,11 @@ vengono validate e conservate, l'ultima riga parziale segnalata e troncata.
 Una riga completa corrotta provoca errore. Buffer e coda possono andare persi
 in un crash: non si promette raccolta senza perdite.
 
-Fermare collect prima di compact: entrambi usano un lock OS esclusivo sulla
-directory, rilasciato anche dopo crash. Compact legge solo i chiusi e partiziona
+Collect e compact possono girare contemporaneamente: `.writer.lock` consente
+un solo collector (incluso il recupero) e `.converter.lock` un solo convertitore
+per directory dati. I lock OS sono rilasciati anche dopo crash. Il writer modifica
+solo gli aperti e pubblica i chiusi con rename atomico, anche durante il recupero.
+I chiusi sono immutabili; compact non legge gli aperti. Compact legge solo i chiusi e partiziona
 per strumento e data UTC di ricezione in
 `data/parquet/instrument=EUR_CASH_USD_IDEALPRO/date=YYYY-MM-DD/`.
 Ogni nome output deriva dall'identità e dal contenuto del segmento: un retry
@@ -134,6 +152,23 @@ eventi identici, precisione decimale, ordine, drain, rotazione, recupero dopo
 interruzione, riconnessione, 1101/1102 ripetuti, confronto integrale NDJSON/Parquet,
 conversione ripetuta e rimozione esplicita. Copre inoltre output corrotti,
 saturazione, soglia disco, errore writer, lock, TOML e chiamata SDK con un doppio.
+I test di regressione caricano il vero TOML di esempio dalla CLI in una directory
+temporanea e usano un clock simulato per pacing a 5, 15 e 30 secondi, sia dopo
+1101 sia dopo caduta socket, inclusi arresto durante l'attesa e 1102 ripetuti.
+Verificano anche compact mentre il collector tiene aperto il segmento successivo.
+
+Per ripetere manualmente la prova CLI senza scrivere dati nella root:
+
+```powershell
+$exampleCheck = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+New-Item -ItemType Directory $exampleCheck
+Copy-Item config.example.toml (Join-Path $exampleCheck 'config.example.toml')
+ibkr-ticks compact --config (Join-Path $exampleCheck 'config.example.toml')
+ibkr-ticks compact --config (Join-Path $exampleCheck 'config.example.toml')
+```
+
+Questa prova del comando su directory vuota verifica il TOML e l'avvio della
+CLI; la suite verifica anche conversione e confronto dei record simulati.
 
 Smoke test da eseguire sulla macchina con Gateway:
 
@@ -141,7 +176,8 @@ Smoke test da eseguire sulla macchina con Gateway:
    `data/paper-smoke` e annotare versioni SDK/Gateway e permessi market data.
 2. Durante il mercato FX aperto eseguire
    `ibkr-ticks collect --config config.paper-smoke.toml`. Verificare handshake,
-   `BidAsk subscription active`, contatori crescenti e assenza di errori permessi.
+   `Sending BidAsk subscription request`, `First BidAsk tick received`, contatori
+   crescenti e assenza di errori permessi.
    La sola sottoscrizione non dimostra arrivo di callback.
 3. Dopo almeno un minuto fermare con Ctrl+C. Nei segmenti chiusi verificare
    `IBKR.tickByTickBidAsk`, contratto EURUSD, timestamp, bid/ask e presenza di

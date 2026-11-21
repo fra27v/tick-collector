@@ -11,13 +11,14 @@ log = logging.getLogger(__name__)
 
 
 class StoreLock:
-    """OS lock released even after a crash; collect/compact cannot race recovery."""
-    def __init__(self, root):
+    """One OS lock per role, automatically released after a crash."""
+    def __init__(self, root, role="writer"):
         self.root = Path(root)
+        self.role = role
 
     def __enter__(self):
         self.root.mkdir(parents=True, exist_ok=True)
-        self.f = (self.root / ".lock").open("a+b")
+        self.f = (self.root / f".{self.role}.lock").open("a+b")
         self.f.seek(0)
         self.f.write(b"0")
         self.f.flush()
@@ -108,7 +109,7 @@ def compact(config, delete=False):
     import pyarrow.parquet as pq
     root = Path(config.storage["directory"])
     count = 0
-    with StoreLock(root):
+    with StoreLock(root, "converter"):
         for source in sorted((root / "segments").glob("*.closed.ndjson")):
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
             groups = {}

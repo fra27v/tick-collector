@@ -25,6 +25,7 @@ def read_raw(root):
 
 def test_end_to_end_reconnect_and_compact(tmp_path):
     c = config(tmp_path)
+    c.ibkr["tick_request_min_interval_seconds"] = 0
     adapters = []
     captured = []
     class Feed:

@@ -11,8 +11,16 @@ Aprire questa root e scegliere un interprete Python >= 3.11:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[test]"
+uv pip install -r pyproject.toml
 Copy-Item config.example.toml config.toml
+```
+
+Il flusso di sviluppo usa i sorgenti dalla root senza installare il progetto.
+`uv` deve essere disponibile nel terminale; `pyproject.toml` è l'unica fonte
+delle dipendenze. Per eseguire anche i test installare l'extra dichiarato nel TOML:
+
+```powershell
+uv pip install -r pyproject.toml --extra test
 ```
 
 Scaricare l'SDK **ufficiale TWS API Latest 1052.01** dalla
@@ -38,13 +46,18 @@ API, attivare **Read-Only API**, consentire localhost e verificare la porta
 (iniziale: 4002). Usare un client ID dedicato senza client concorrenti.
 
 ```powershell
-ibkr-ticks collect --config config.toml
+python run.py collect --config config.toml
 # Ctrl+C: disconnessione, svuotamento coda e chiusura segmento
-ibkr-ticks compact --config config.toml
+python run.py compact --config config.toml
 # Solo per eliminare gli originali dopo verifica integrale del Parquet:
-ibkr-ticks compact --config config.toml --delete-originals
+python run.py compact --config config.toml --delete-originals
 python -m pytest -q
 ```
+
+`python run.py --help` mostra gli argomenti disponibili. Il comando installabile
+`ibkr-ticks` resta disponibile installando il progetto (`uv pip install -e .`):
+entrambi delegano a `ibkr_ticks.cli.main()` e usano gli stessi argomenti e codici
+di uscita.
 
 SIGTERM esegue la stessa chiusura ordinata; la terminazione forzata su Windows
 non equivale a SIGTERM. Errori: exit code 1. La configurazione valida tipi,
@@ -55,7 +68,7 @@ backlog, spazio, interruzioni ed errori. Per conservarli:
 
 ```powershell
 New-Item -ItemType Directory -Force logs
-ibkr-ticks collect --config config.toml 2> logs/collector.log
+python run.py collect --config config.toml 2> logs/collector.log
 ```
 
 ## Dati e significato
@@ -163,8 +176,8 @@ Per ripetere manualmente la prova CLI senza scrivere dati nella root:
 $exampleCheck = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
 New-Item -ItemType Directory $exampleCheck
 Copy-Item config.example.toml (Join-Path $exampleCheck 'config.example.toml')
-ibkr-ticks compact --config (Join-Path $exampleCheck 'config.example.toml')
-ibkr-ticks compact --config (Join-Path $exampleCheck 'config.example.toml')
+python run.py compact --config (Join-Path $exampleCheck 'config.example.toml')
+python run.py compact --config (Join-Path $exampleCheck 'config.example.toml')
 ```
 
 Questa prova del comando su directory vuota verifica il TOML e l'avvio della
@@ -175,7 +188,7 @@ Smoke test da eseguire sulla macchina con Gateway:
 1. Copiare il TOML in `config.paper-smoke.toml`, impostare directory
    `data/paper-smoke` e annotare versioni SDK/Gateway e permessi market data.
 2. Durante il mercato FX aperto eseguire
-   `ibkr-ticks collect --config config.paper-smoke.toml`. Verificare handshake,
+   `python run.py collect --config config.paper-smoke.toml`. Verificare handshake,
    `Sending BidAsk subscription request`, `First BidAsk tick received`, contatori
    crescenti e assenza di errori permessi.
    La sola sottoscrizione non dimostra arrivo di callback.

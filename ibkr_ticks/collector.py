@@ -27,8 +27,12 @@ class Collector:
         self.stop = threading.Event()
         self.ready = threading.Event()
         self.lost = threading.Event()
-        self.resubscribe = threading.Event()
-        self.maintained = threading.Event()
+        # ready describes only the socket handshake. IBKR connectivity and
+        # subscription state are updated together, in callback arrival order.
+        self.connection_lock = threading.RLock()
+        self.ibkr_connected = True
+        self.subscription_needed = True
+        self.socket_request_sent = False
         self.run_id = str(uuid.uuid4())
         self.sequence = self.written = 0
         self.failure = None
@@ -66,19 +70,23 @@ class Collector:
 
     def error(self, code, message):
         log.warning("IBKR code=%s message=%s", code, message)
+        with self.connection_lock:
+            self._connection_error(code, message)
+
+    def _connection_error(self, code, message):
         if code == 1100:
-            self.ready.clear()
+            self.ibkr_connected = False
             self.recovery_processed = False
         elif code == 1101:
+            self.ibkr_connected = True
             if not self.recovery_processed:
-                self.maintained.clear()
-                self.resubscribe.set()
+                self.subscription_needed = True
                 self.recovery_processed = True
         elif code == 1102:
+            self.ibkr_connected = True
             self.recovery_processed = True
-            self.resubscribe.clear()
-            self.maintained.set()
-            self.ready.set()  # subscriptions maintained: do not submit again
+            if self.socket_request_sent:
+                self.subscription_needed = False
         elif code in (502, 504, 1300):
             self.lost.set()
         elif code in (2103, 2105, 2110):
@@ -118,8 +126,6 @@ class Collector:
             backoff = 1
             retry_at = 0
             deadline = 0
-            subscribed = False
-            request_sent = False
             handshake_complete = False
             status_at = 0
             try:
@@ -144,11 +150,11 @@ class Collector:
                     if adapter is None and now >= retry_at:
                         self.ready.clear()
                         self.lost.clear()
-                        self.resubscribe.clear()
-                        self.maintained.clear()
-                        self.recovery_processed = False
-                        subscribed = False
-                        request_sent = False
+                        with self.connection_lock:
+                            self.ibkr_connected = True
+                            self.subscription_needed = True
+                            self.socket_request_sent = False
+                            self.recovery_processed = False
                         handshake_complete = False
                         adapter = self.factory(self)
                         deadline = now + 15
@@ -157,23 +163,21 @@ class Collector:
                         except Exception:
                             log.exception("Connection attempt failed")
                             self.lost.set()
-                    if adapter and self.resubscribe.is_set():
-                        self.resubscribe.clear()
-                        subscribed = False
-                        self.ready.set()
-                    if self.maintained.is_set() and request_sent:
-                        subscribed = True
-                    if adapter and self.ready.is_set() and not subscribed and not self.lost.is_set():
-                        handshake_complete = True
-                        interval = self.config.ibkr["tick_request_min_interval_seconds"]
-                        if self.last_request_at is None or now - self.last_request_at >= interval:
-                            self.last_request_at = now
-                            request_sent = True
-                            self.first_tick_received = False
-                            log.info("Sending BidAsk subscription request instrument=%s", self.config.instrument)
-                            adapter.subscribe()
-                            subscribed = True
-                            backoff = 1
+                    with self.connection_lock:
+                        if (adapter and self.ready.is_set() and self.ibkr_connected
+                                and self.subscription_needed and not self.lost.is_set()
+                                and not self.stop.is_set()):
+                            handshake_complete = True
+                            interval = self.config.ibkr["tick_request_min_interval_seconds"]
+                            request_at = self.clock()
+                            if self.last_request_at is None or request_at - self.last_request_at >= interval:
+                                self.last_request_at = request_at
+                                self.socket_request_sent = True
+                                self.subscription_needed = False
+                                self.first_tick_received = False
+                                log.info("Sending BidAsk subscription request instrument=%s", self.config.instrument)
+                                adapter.subscribe()
+                                backoff = 1
                     self.wait(0.05)
             finally:
                 try:

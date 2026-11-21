@@ -29,7 +29,8 @@ def test_official_sdk_boundary(monkeypatch):
     adapter.app.tickByTickBidAsk(1, 123, 1., 2., "1.001", "2.002", SimpleNamespace(bidPastLow=True, askPastHigh=False))
     assert sink.queue.get_nowait()["bid_size"] == "1.001"
     adapter.app.error(1, 1100, "lost")
-    assert not sink.ready.is_set()
+    assert sink.ready.is_set()
+    assert not sink.ibkr_connected
     adapter.app.error(1, 1234567890, 1102, "restored", "")
     assert sink.ready.is_set()
-    assert not sink.resubscribe.is_set()
+    assert sink.ibkr_connected
